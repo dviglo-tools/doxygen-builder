@@ -1,0 +1,139 @@
+# Данный workflow качает исходники Doxygen, компилирует под разные платформы и помещает в репозиторий
+
+# Требуемые зависимости можно посмотреть здесь:
+# https://github.com/doxygen/doxygen/blob/master/.github/workflows/build_cmake.yml
+
+# Отображаемое имя workflow
+# https://docs.github.com/en/actions/reference/workflow-syntax-for-github-actions#name
+name: Компиляция Doxygen
+
+on:
+  # Данный workflow запускается вручную
+  # https://docs.github.com/en/actions/reference/events-that-trigger-workflows#manual-events
+  workflow_dispatch:
+
+jobs:
+
+  # Идентификатор job
+  # https://docs.github.com/en/actions/reference/workflow-syntax-for-github-actions#jobsjob_id
+  DOXYGEN_BUILDER:
+
+    # Используем матрицу для параллельной сборки на разных платформах
+    # https://docs.github.com/en/actions/using-workflows/workflow-syntax-for-github-actions#jobsjob_idstrategy
+    strategy:
+      matrix:
+        CONFIG:
+        - {
+            JOB_NAME: 🔲-32,
+            JOB_OS: windows-latest,
+            CMAKE_COMMAND: 'cmake doxygen_repo -B doxygen_build -G "Visual Studio 17 2022" -A Win32',
+            CMAKE_BUILD_COMMAND: "cmake --build doxygen_build --config Release",
+            RESULT_ARCHIVE_NAME: "doxygen_win32.zip",
+          }
+        - {
+            JOB_NAME: 🔲-64,
+            JOB_OS: windows-latest,
+            CMAKE_COMMAND: 'cmake doxygen_repo -B doxygen_build -G "Visual Studio 17 2022" -A x64',
+            CMAKE_BUILD_COMMAND: "cmake --build doxygen_build --config Release",
+            RESULT_ARCHIVE_NAME: "doxygen_win64.zip",
+          }
+        - {
+            JOB_NAME: 🐧-32,
+            JOB_OS: ubuntu-latest,
+            CMAKE_COMMAND: 'cmake doxygen_repo -B doxygen_build -G "Unix Makefiles" -D CMAKE_BUILD_TYPE=Release -D CMAKE_C_FLAGS=-m32 -D CMAKE_CXX_FLAGS=-m32',
+            CMAKE_BUILD_COMMAND: "cmake --build doxygen_build",
+            RESULT_ARCHIVE_NAME: "doxygen_linux32.zip",
+          }
+        - {
+            JOB_NAME: 🐧-64,
+            JOB_OS: ubuntu-latest,
+            CMAKE_COMMAND: 'cmake doxygen_repo -B doxygen_build -G "Unix Makefiles" -D CMAKE_BUILD_TYPE=Release -D CMAKE_C_FLAGS=-m64 -D CMAKE_CXX_FLAGS=-m64',
+            CMAKE_BUILD_COMMAND: "cmake --build doxygen_build",
+            RESULT_ARCHIVE_NAME: "doxygen_linux64.zip",
+          }
+        - {
+            JOB_NAME: 🍏-64,
+            JOB_OS: macos-latest,
+            CMAKE_COMMAND: 'cmake doxygen_repo -B doxygen_build -G "Unix Makefiles" -D CMAKE_BUILD_TYPE=Release',
+            CMAKE_BUILD_COMMAND: "cmake --build doxygen_build",
+            RESULT_ARCHIVE_NAME: "doxygen_macos64.zip",
+          }
+
+    # Будет запущен на виртуальной машине с указанной OS
+    # https://docs.github.com/en/actions/reference/workflow-syntax-for-github-actions#jobsjob_idruns-on
+    runs-on: ${{ matrix.CONFIG.JOB_OS }}
+
+    # Отображаемое имя job 
+    # https://docs.github.com/en/actions/reference/workflow-syntax-for-github-actions#jobsjob_idname
+    name: ${{ matrix.CONFIG.JOB_NAME }}
+
+    # Последовательность задач
+    # https://docs.github.com/en/actions/reference/workflow-syntax-for-github-actions#jobsjob_idsteps
+    steps:
+
+    - name: Работаем
+      # Дефолтная командная оболочка моментально прекращает работу, если при выполнении любой команды возникла ошибка.
+      # Нам же нужна возможность обработки ошибок
+      # https://docs.github.com/en/actions/using-workflows/workflow-syntax-for-github-actions#jobsjob_idstepsshell
+      shell: bash {0}
+
+      run: |
+        #set -v # Отображаем выполняемые команды
+        #pwd # Показываем текущую папку
+
+        if [[ ${{ matrix.CONFIG.JOB_OS }} == windows-latest ]]
+        then
+          # Устанавливаем Flex и Bison в Windows
+          choco install winflexbison
+
+          # Приложения в Windows имеют расширение exe, и не имеют расширений в Linux и Mac OS
+          EXE=".exe"
+        elif [[ ${{ matrix.CONFIG.JOB_OS }} == ubuntu-latest ]]
+        then
+          # Позволяет создавать 32-битные сборки на 64-битной OS
+          sudo apt-get install gcc-multilib g++-multilib
+        elif [[ ${{ matrix.CONFIG.JOB_OS }} == macos-latest ]]
+        then
+          # Устанавливаем более новый Bison в macOS
+          brew install bison
+
+          # Путь к нему нужно добавить в PATH
+          PATH=/usr/local/opt/bison/bin:$PATH
+        fi
+
+        # Качаем и компилируем исходники Doxygen
+        git clone https://github.com/doxygen/doxygen doxygen_repo
+        ${{ matrix.CONFIG.CMAKE_COMMAND }}
+        ${{ matrix.CONFIG.CMAKE_BUILD_COMMAND }}
+
+        # Сохраняем версию Doxygen в переменную
+        DOXYGEN_VERSION=$(./doxygen_build/bin/doxygen${EXE} --version)
+
+        # Архивируем результат
+        7z a -tzip ${{ matrix.CONFIG.RESULT_ARCHIVE_NAME }} ./doxygen_build/bin/doxygen${EXE}
+
+        # Отправляем результат в текущий репозиторий
+        git config --global user.email "rurho3d[bot]@users.noreply.github.com"
+        git config --global user.name "rurho3d[bot]"
+
+        # Одновременно может заливаться другая сборка и произойдёт кофликт, поэтому пробуем несколько раз
+        for (( i = 0; i < 4; ++i ))
+        do
+          git clone https://github.com/${{ github.repository }} builder_repo
+          cp ${{ matrix.CONFIG.RESULT_ARCHIVE_NAME }} ./builder_repo/
+          cd builder_repo
+          git add -A
+          git diff-index --quiet HEAD || git commit -m "${{ matrix.CONFIG.RESULT_ARCHIVE_NAME }} ${DOXYGEN_VERSION}" # Создаём коммит, если есть изменения
+          git push https://oauth2:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}
+          EXIT_CODE=$? # Сохраняем код возврата предыдущей команды
+          cd ..
+
+          if (( $EXIT_CODE == 0 )) # Если git push прошёл успешно, то прерываем цикл
+          then
+            break
+          else
+            echo "========== Не удалось залить сборку, пробуем ещё =========="
+            rm -rf builder_repo
+            sleep 20
+          fi
+        done
